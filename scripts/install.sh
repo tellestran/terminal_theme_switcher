@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/tellestran/switch-theme.git}"
+REPO_URL="${REPO_URL:-https://github.com/tellestran/terminal_theme_switcher.git}"
 BIN_NAME="${BIN_NAME:-switch-theme}"
 
 log() {
