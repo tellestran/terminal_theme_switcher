@@ -4,6 +4,39 @@ Interactive terminal theme switcher for macOS and modern terminals.
 
 `switch-theme` lets you preview bundled color themes, save one as default, and re-apply it quickly from the command line.
 
+## Quick Install (curl)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tellestran/switch-theme/main/scripts/install.sh | bash
+```
+
+This installer:
+
+- Installs Rust/Cargo via `rustup` if missing
+- Installs `switch-theme` from this GitHub repo using `cargo install`
+
+### What `install.sh` does
+
+1. Checks whether `cargo` exists.
+2. If missing, installs Rust using `rustup`.
+3. Loads Cargo environment from `~/.cargo/env`.
+4. Runs:
+
+```bash
+cargo install --locked --git https://github.com/tellestran/switch-theme.git switch-theme
+```
+
+5. Prints a success message and suggests `switch-theme --help`.
+
+### Optional: override installer variables
+
+You can override defaults by exporting environment variables before running the script:
+
+```bash
+REPO_URL="https://github.com/your-org/switch-theme.git" BIN_NAME="switch-theme" \
+  bash <(curl -fsSL https://raw.githubusercontent.com/tellestran/switch-theme/main/scripts/install.sh)
+```
+
 ## Features
 
 - Interactive TUI theme picker
@@ -82,7 +115,10 @@ Saved theme config path:
 
 - `cargo: command not found`
   - Install Rust and source Cargo env (`source "$HOME/.cargo/env"`).
+- `switch-theme: command not found` after install
+  - Your shell may not have Cargo bin on `PATH` yet.
+  - Run `source "$HOME/.cargo/env"` and retry.
+  - To persist, add `source "$HOME/.cargo/env"` to `~/.zshrc`.
 - `interactive mode requires a TTY`
   - Run `cargo run` directly in a normal terminal session.
   - For non-interactive environments, use subcommands like `cargo run -- list`.
-
