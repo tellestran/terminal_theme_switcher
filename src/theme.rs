@@ -37,7 +37,7 @@ fn normalize(value: &str) -> String {
         .join("-")
 }
 
-const THEMES: [Theme; 12] = [
+const THEMES: [Theme; 13] = [
     Theme {
         name: "Tokyo Night",
         slug: "tokyo-night",
@@ -182,6 +182,18 @@ const THEMES: [Theme; 12] = [
             "#164236", "#ef8a7b", "#92d99b", "#ead37a", "#80bdc5", "#c996cb", "#82dfbf", "#eff7e8",
         ],
     },
+    Theme {
+        name: "Rose Fern",
+        slug: "rose-fern",
+        foreground: "#FFD786",
+        background: "#237227",
+        cursor: "#FFD6DD",
+        selection: "#2F6E5A",
+        ansi: [
+            "#2A5D4D", "#F26076", "#7ED4A4", "#F2C66D", "#86B6FF", "#D99AF6", "#6DD5CF", "#F7B6C2",
+            "#367A63", "#FF7F91", "#A0E2BA", "#F8D98F", "#A5C8FF", "#E6B5FA", "#8FE4DF", "#FFE6EB",
+        ],
+    },
 ];
 
 #[cfg(test)]
@@ -200,6 +212,7 @@ mod tests {
         assert_eq!(find_theme("mint-lagoon").unwrap().name, "Mint Lagoon");
         assert_eq!(find_theme("Harbor Harvest").unwrap().slug, "harbor-harvest");
         assert_eq!(find_theme("forest depths").unwrap().slug, "forest-depths");
+        assert_eq!(find_theme("rose fern").unwrap().slug, "rose-fern");
     }
 
     #[test]

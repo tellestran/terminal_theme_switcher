@@ -12,10 +12,17 @@ pub struct Cli {
 pub enum Command {
     /// Apply the saved theme to the current terminal session.
     Apply,
+    /// Set the active theme by slug or name (works in headless/non-TTY).
+    Set {
+        /// Theme slug or name.
+        theme: String,
+    },
     /// List all bundled themes.
     List,
     /// Print the currently saved theme.
     Current,
+    /// Print a shell init snippet for manual profile setup.
+    Init,
     /// Ask the terminal to restore its default palette.
     Reset,
 }

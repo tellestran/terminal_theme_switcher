@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 
+use crate::config::CustomTheme;
 use crate::theme::Theme;
 
 const ESC: &str = "\x1b]";
@@ -10,21 +11,48 @@ pub fn apply_theme<W: Write>(mut writer: W, theme: &Theme) -> io::Result<()> {
     writer.flush()
 }
 
+pub fn apply_custom_theme<W: Write>(mut writer: W, theme: &CustomTheme) -> io::Result<()> {
+    writer.write_all(
+        theme_escape_sequence_from_parts(
+            &theme.ansi,
+            &theme.foreground,
+            &theme.background,
+            &theme.cursor,
+        )
+        .as_bytes(),
+    )?;
+    writer.flush()
+}
+
 pub fn reset_theme<W: Write>(mut writer: W) -> io::Result<()> {
     writer.write_all(reset_escape_sequence().as_bytes())?;
     writer.flush()
 }
 
 pub fn theme_escape_sequence(theme: &Theme) -> String {
+    theme_escape_sequence_from_parts(
+        &theme.ansi.map(str::to_string),
+        theme.foreground,
+        theme.background,
+        theme.cursor,
+    )
+}
+
+fn theme_escape_sequence_from_parts(
+    ansi: &[String; 16],
+    foreground: &str,
+    background: &str,
+    cursor: &str,
+) -> String {
     let mut sequence = String::new();
 
-    for (index, color) in theme.ansi.iter().enumerate() {
+    for (index, color) in ansi.iter().enumerate() {
         sequence.push_str(&format!("{ESC}4;{index};{color}{BEL}"));
     }
 
-    sequence.push_str(&format!("{ESC}10;{}{BEL}", theme.foreground));
-    sequence.push_str(&format!("{ESC}11;{}{BEL}", theme.background));
-    sequence.push_str(&format!("{ESC}12;{}{BEL}", theme.cursor));
+    sequence.push_str(&format!("{ESC}10;{}{BEL}", foreground));
+    sequence.push_str(&format!("{ESC}11;{}{BEL}", background));
+    sequence.push_str(&format!("{ESC}12;{}{BEL}", cursor));
 
     sequence
 }

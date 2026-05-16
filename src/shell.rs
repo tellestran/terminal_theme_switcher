@@ -10,6 +10,25 @@ const END_MARKER: &str = "# switch-theme end";
 const HOOK_COMMAND: &str =
     "command -v switch-theme >/dev/null 2>&1 && switch-theme apply >/dev/null 2>&1";
 
+pub fn init_snippet() -> String {
+    HOOK_COMMAND.to_string()
+}
+
+#[allow(dead_code)]
+pub fn suggested_profile_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let profile = if shell.contains("zsh") {
+        ".zshrc"
+    } else if shell.contains("bash") {
+        ".bashrc"
+    } else {
+        ".profile"
+    };
+    Some(home.join(profile))
+}
+
+#[allow(dead_code)]
 pub fn install_zsh_hook() -> Result<()> {
     let home = dirs::home_dir().context("could not find home directory")?;
     install_zsh_hook_at(home.join(".zshrc"))
