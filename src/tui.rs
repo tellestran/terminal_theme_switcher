@@ -761,7 +761,7 @@ fn draw_library(frame: &mut Frame, app: &mut App) {
     }
 
     let footer = Paragraph::new(format!(
-        "{}    v1.0.4  [h:home n:new e:edit d:delete a/apply enter:save q:quit]",
+        "{}    v1.0.0  [h:home n:new e:edit d:delete a/apply enter:save q:quit]",
         app.status
     ))
     .style(Style::default().fg(MUTED))
