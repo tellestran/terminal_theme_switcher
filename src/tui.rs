@@ -27,6 +27,14 @@ use crate::{
     theme::{self, Theme},
 };
 
+const BASE_BG: Color = Color::Rgb(39, 10, 1);
+const PANEL_BG: Color = Color::Rgb(52, 14, 2);
+const FG: Color = Color::Rgb(245, 230, 196);
+const MUTED: Color = Color::Rgb(191, 166, 141);
+const BORDER: Color = Color::Rgb(214, 184, 135);
+const ACCENT: Color = Color::Rgb(255, 235, 195);
+const WARN: Color = Color::Rgb(255, 140, 120);
+
 #[derive(Debug, Clone)]
 struct ThemeEntry {
     name: String,
@@ -42,45 +50,47 @@ struct ThemeEntry {
 #[derive(Debug, Clone, Copy)]
 enum ThemeSource {
     BuiltIn,
+    BuiltInOverride,
     Custom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Picker,
-    Wizard,
+enum AppMode {
+    Home,
+    Library,
+    Creator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WizardStep {
+enum CreatorStep {
     Guide,
     Background,
-    Text,
-    Accent1,
-    Accent2,
+    Foreground,
+    Cursor,
+    Selection,
     Name,
     Review,
 }
 
 #[derive(Debug, Clone)]
-struct WizardState {
-    step: WizardStep,
+struct CreatorState {
+    step: CreatorStep,
     background: String,
-    text: String,
-    accent1: String,
-    accent2: String,
+    foreground: String,
+    cursor: String,
+    selection: String,
     name: String,
     error: Option<String>,
 }
 
-impl Default for WizardState {
+impl Default for CreatorState {
     fn default() -> Self {
         Self {
-            step: WizardStep::Guide,
+            step: CreatorStep::Guide,
             background: String::new(),
-            text: String::new(),
-            accent1: String::new(),
-            accent2: String::new(),
+            foreground: String::new(),
+            cursor: String::new(),
+            selection: String::new(),
             name: String::new(),
             error: None,
         }
@@ -88,13 +98,16 @@ impl Default for WizardState {
 }
 
 struct App {
-    mode: Mode,
+    mode: AppMode,
+    home_selected: usize,
     themes: Vec<ThemeEntry>,
     selected: usize,
     status: String,
     branch: String,
-    state: ListState,
-    wizard: WizardState,
+    list_state: ListState,
+    creator: CreatorState,
+    editing_slug: Option<String>,
+    pending_delete_slug: Option<String>,
     list_area: Rect,
 }
 
@@ -138,13 +151,16 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
         .unwrap_or(0);
 
     let mut app = App {
-        mode: Mode::Picker,
+        mode: AppMode::Home,
+        home_selected: 0,
         themes,
         selected,
-        status: "Arrows/jk move • Enter save • c create • q quit".to_string(),
+        status: "SYSTEM_STATUS: OK | Active: Local_Default".to_string(),
         branch: current_git_branch(),
-        state: ListState::default(),
-        wizard: WizardState::default(),
+        list_state: ListState::default(),
+        creator: CreatorState::default(),
+        editing_slug: None,
+        pending_delete_slug: None,
         list_area: Rect::default(),
     };
 
@@ -153,10 +169,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
     }
 
     loop {
-        app.state.select(Some(app.selected));
+        app.list_state.select(Some(app.selected));
         terminal.draw(|frame| draw(frame, &mut app))?;
 
-        if event::poll(Duration::from_millis(160))? {
+        if event::poll(Duration::from_millis(150))? {
             match event::read()? {
                 Event::Key(key) => {
                     if handle_key(&mut app, key)? {
@@ -173,48 +189,142 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
     Ok(())
 }
 
-fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
-    if app.mode != Mode::Picker {
-        return Ok(());
-    }
-    if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-        return Ok(());
-    }
-
-    let x = mouse.column;
-    let y = mouse.row;
-    let area = app.list_area;
-    if x < area.x || x >= area.x + area.width || y < area.y || y >= area.y + area.height {
-        return Ok(());
-    }
-
-    let inner_top = area.y + 1;
-    let inner_bottom = area.y + area.height.saturating_sub(1);
-    if y < inner_top || y >= inner_bottom {
-        return Ok(());
-    }
-    let idx = (y - inner_top) as usize;
-    if idx < app.themes.len() {
-        app.selected = idx;
-        if let Some(theme) = app.themes.get(app.selected) {
-            apply_entry_theme(theme)?;
-            app.status = format!("Previewing {}.", theme.name);
-        }
-    }
-    Ok(())
-}
-
 fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Ok(true);
+    }
+
     match app.mode {
-        Mode::Picker => handle_picker_key(app, key),
-        Mode::Wizard => handle_wizard_key(app, key),
+        AppMode::Home => handle_home_key(app, key),
+        AppMode::Library => handle_library_key(app, key),
+        AppMode::Creator => handle_creator_key(app, key),
     }
 }
 
-fn handle_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
+fn handle_home_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
+        KeyCode::Down | KeyCode::Char('j') => app.home_selected = (app.home_selected + 1) % 2,
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.home_selected = app.home_selected.checked_sub(1).unwrap_or(1)
+        }
+        KeyCode::Char('1') => {
+            app.mode = AppMode::Creator;
+            app.creator = CreatorState::default();
+            app.editing_slug = None;
+            app.status = "Theme creator launched.".to_string();
+        }
+        KeyCode::Char('2') => {
+            app.mode = AppMode::Library;
+            app.status = "Library opened.".to_string();
+        }
+        KeyCode::Enter => {
+            if app.home_selected == 0 {
+                app.mode = AppMode::Creator;
+                app.creator = CreatorState::default();
+                app.editing_slug = None;
+                app.status = "Theme creator launched.".to_string();
+            } else {
+                app.mode = AppMode::Library;
+                app.status = "Library opened.".to_string();
+            }
+        }
+        _ => {}
+    }
+
+    Ok(false)
+}
+
+fn handle_library_key(app: &mut App, key: KeyEvent) -> Result<bool> {
+    if let Some(slug) = app.pending_delete_slug.clone() {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let deleted = if app.themes.iter().any(|theme| {
+                    theme.slug == slug && matches!(theme.source, ThemeSource::BuiltInOverride)
+                }) {
+                    config::delete_builtin_override(&slug)?
+                } else {
+                    config::delete_custom_theme(&slug)?
+                };
+                app.pending_delete_slug = None;
+                if deleted {
+                    let saved = config::Config::load().unwrap_or_default();
+                    app.themes = build_theme_entries(&saved);
+                    app.selected = app
+                        .themes
+                        .iter()
+                        .position(|theme| theme.slug == saved.theme)
+                        .unwrap_or(0);
+                    if let Some(theme) = app.themes.get(app.selected) {
+                        apply_entry_theme(theme)?;
+                    }
+                    app.status = format!("Deleted theme customization '{}'.", slug);
+                } else {
+                    app.status = "Theme not found; nothing deleted.".to_string();
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.pending_delete_slug = None;
+                app.status = "Delete cancelled.".to_string();
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
+        KeyCode::Char('h') => {
+            app.mode = AppMode::Home;
+            app.status = "Returned to launcher.".to_string();
+        }
+        KeyCode::Char('n') => {
+            app.mode = AppMode::Creator;
+            app.creator = CreatorState::default();
+            app.editing_slug = None;
+            app.status = "Theme creator launched.".to_string();
+        }
+        KeyCode::Char('e') => {
+            if let Some(theme) = app.themes.get(app.selected) {
+                match theme.source {
+                    ThemeSource::Custom | ThemeSource::BuiltIn | ThemeSource::BuiltInOverride => {
+                        app.mode = AppMode::Creator;
+                        app.creator = CreatorState {
+                            step: CreatorStep::Background,
+                            background: theme.background.clone(),
+                            foreground: theme.foreground.clone(),
+                            cursor: theme.cursor.clone(),
+                            selection: theme.selection.clone(),
+                            name: theme.name.clone(),
+                            error: None,
+                        };
+                        app.editing_slug = Some(theme.slug.clone());
+                        app.status = format!("Editing theme '{}'.", theme.slug);
+                    }
+                }
+            }
+        }
+        KeyCode::Char('d') => {
+            if let Some(theme) = app.themes.get(app.selected) {
+                match theme.source {
+                    ThemeSource::Custom => {
+                        app.pending_delete_slug = Some(theme.slug.clone());
+                        app.status =
+                            format!("Delete '{}' ? Press y to confirm, n to cancel.", theme.slug);
+                    }
+                    ThemeSource::BuiltInOverride => {
+                        app.pending_delete_slug = Some(theme.slug.clone());
+                        app.status = format!(
+                            "Revert built-in override '{}' ? Press y to confirm, n to cancel.",
+                            theme.slug
+                        );
+                    }
+                    ThemeSource::BuiltIn => {
+                        app.status = "No override to delete for this built-in theme.".to_string();
+                    }
+                }
+            }
+        }
         KeyCode::Down | KeyCode::Char('j') => {
             app.selected = (app.selected + 1) % app.themes.len();
             if let Some(theme) = app.themes.get(app.selected) {
@@ -229,17 +339,12 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.status = format!("Previewing {}.", theme.name);
             }
         }
-        KeyCode::Enter => {
+        KeyCode::Enter | KeyCode::Char('a') => {
             if let Some(theme) = app.themes.get(app.selected) {
                 save_selected_entry(theme)?;
                 apply_entry_theme(theme)?;
-                app.status = format!("Saved {}.", theme.name);
+                app.status = format!("Saved {}.", theme.slug);
             }
-        }
-        KeyCode::Char('c') => {
-            app.mode = Mode::Wizard;
-            app.wizard = WizardState::default();
-            app.status = "Mode: Create Theme".to_string();
         }
         _ => {}
     }
@@ -247,83 +352,104 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
-fn handle_wizard_key(app: &mut App, key: KeyEvent) -> Result<bool> {
-    if key.code == KeyCode::Esc
-        || key.code == KeyCode::Char('q')
-        || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
-    {
-        app.mode = Mode::Picker;
-        app.wizard = WizardState::default();
-        app.status = "Creation cancelled. Back to picker.".to_string();
+fn handle_creator_key(app: &mut App, key: KeyEvent) -> Result<bool> {
+    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+        app.mode = AppMode::Library;
+        app.creator = CreatorState::default();
+        app.editing_slug = None;
+        app.status = "Creator aborted.".to_string();
         return Ok(false);
     }
 
-    match app.wizard.step {
-        WizardStep::Guide => {
-            if matches!(key.code, KeyCode::Enter | KeyCode::Char('n')) {
-                app.wizard.step = WizardStep::Background;
-                app.wizard.error = None;
+    match app.creator.step {
+        CreatorStep::Guide => {
+            if matches!(key.code, KeyCode::Enter | KeyCode::Char('p')) {
+                app.creator.step = CreatorStep::Background;
+                app.creator.error = None;
             }
         }
-        WizardStep::Background => handle_wizard_input_step(
+        CreatorStep::Background => handle_creator_color_step(
             key,
-            &mut app.wizard.background,
-            &mut app.wizard.error,
-            WizardStep::Text,
-            &mut app.wizard.step,
+            &mut app.creator.background,
+            &mut app.creator.error,
+            CreatorStep::Foreground,
+            &mut app.creator.step,
         ),
-        WizardStep::Text => handle_wizard_input_step(
+        CreatorStep::Foreground => handle_creator_color_step(
             key,
-            &mut app.wizard.text,
-            &mut app.wizard.error,
-            WizardStep::Accent1,
-            &mut app.wizard.step,
+            &mut app.creator.foreground,
+            &mut app.creator.error,
+            CreatorStep::Cursor,
+            &mut app.creator.step,
         ),
-        WizardStep::Accent1 => handle_wizard_input_step(
+        CreatorStep::Cursor => handle_creator_color_step(
             key,
-            &mut app.wizard.accent1,
-            &mut app.wizard.error,
-            WizardStep::Accent2,
-            &mut app.wizard.step,
+            &mut app.creator.cursor,
+            &mut app.creator.error,
+            CreatorStep::Selection,
+            &mut app.creator.step,
         ),
-        WizardStep::Accent2 => handle_wizard_input_step(
+        CreatorStep::Selection => handle_creator_color_step(
             key,
-            &mut app.wizard.accent2,
-            &mut app.wizard.error,
-            WizardStep::Name,
-            &mut app.wizard.step,
+            &mut app.creator.selection,
+            &mut app.creator.error,
+            CreatorStep::Name,
+            &mut app.creator.step,
         ),
-        WizardStep::Name => match key.code {
+        CreatorStep::Name => match key.code {
             KeyCode::Backspace => {
-                app.wizard.name.pop();
+                app.creator.name.pop();
             }
-            KeyCode::Enter => {
-                let value = app.wizard.name.trim();
+            KeyCode::Enter | KeyCode::Tab => {
+                let value = app.creator.name.trim();
                 if value.is_empty() {
-                    app.wizard.error = Some("Theme name cannot be empty.".to_string());
+                    app.creator.error = Some("Theme name is required.".to_string());
                 } else {
-                    app.wizard.error = None;
-                    app.wizard.step = WizardStep::Review;
+                    app.creator.error = None;
+                    app.creator.step = CreatorStep::Review;
                 }
             }
             KeyCode::Char(ch)
                 if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
             {
-                app.wizard.name.push(ch);
+                app.creator.name.push(ch);
             }
             _ => {}
         },
-        WizardStep::Review => match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+        CreatorStep::Review => match key.code {
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
                 let generated = generate_custom_theme(
-                    app.wizard.name.trim(),
-                    &app.wizard.background,
-                    &app.wizard.text,
-                    &app.wizard.accent1,
-                    &app.wizard.accent2,
+                    app.creator.name.trim(),
+                    &app.creator.background,
+                    &app.creator.foreground,
+                    &app.creator.cursor,
+                    &app.creator.selection,
                 );
-
-                config::save_custom_theme(generated.clone())?;
+                let generated = if let Some(existing_slug) = &app.editing_slug {
+                    config::CustomTheme {
+                        slug: existing_slug.clone(),
+                        ..generated
+                    }
+                } else {
+                    generated
+                };
+                if let Some(editing_slug) = &app.editing_slug {
+                    if theme::find_theme(editing_slug).is_some() {
+                        config::save_builtin_override(config::BuiltinOverride {
+                            name: generated.name.clone(),
+                            slug: editing_slug.clone(),
+                            foreground: generated.foreground.clone(),
+                            background: generated.background.clone(),
+                            cursor: generated.cursor.clone(),
+                            selection: generated.selection.clone(),
+                            ansi: generated.ansi.clone(),
+                        })?;
+                    } else {
+                        config::save_custom_theme(generated.clone())?;
+                    }
+                } else {
+                    config::save_custom_theme(generated.clone())?;
+                }
 
                 let saved = config::Config::load().unwrap_or_default();
                 app.themes = build_theme_entries(&saved);
@@ -337,17 +463,16 @@ fn handle_wizard_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     apply_entry_theme(theme)?;
                 }
 
-                app.mode = Mode::Picker;
-                app.wizard = WizardState::default();
-                app.status = format!(
-                    "Created '{}' and added it to your theme list.",
-                    generated.name
-                );
+                app.mode = AppMode::Library;
+                app.creator = CreatorState::default();
+                app.editing_slug = None;
+                app.status = format!("Saved {}.", generated.slug);
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
-                app.mode = Mode::Picker;
-                app.wizard = WizardState::default();
-                app.status = "Creation cancelled. Back to picker.".to_string();
+                app.mode = AppMode::Library;
+                app.creator = CreatorState::default();
+                app.editing_slug = None;
+                app.status = "Creator cancelled.".to_string();
             }
             _ => {}
         },
@@ -356,37 +481,25 @@ fn handle_wizard_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
-fn handle_wizard_input_step(
+fn handle_creator_color_step(
     key: KeyEvent,
     field: &mut String,
     error: &mut Option<String>,
-    next: WizardStep,
-    current: &mut WizardStep,
+    next: CreatorStep,
+    current: &mut CreatorStep,
 ) {
     match key.code {
-        KeyCode::Tab => {
-            let value = normalize_color_input(field);
-            if let Some(normalized) = parse_color_input(&value) {
-                *field = normalized;
-                *error = None;
-                *current = next;
-            } else {
-                *error =
-                    Some("Invalid color. Use hex, name (red), or ANSI index (0-255).".to_string());
-            }
-        }
         KeyCode::Backspace => {
             field.pop();
         }
-        KeyCode::Enter => {
+        KeyCode::Enter | KeyCode::Tab => {
             let value = normalize_color_input(field);
             if let Some(normalized) = parse_color_input(&value) {
                 *field = normalized;
                 *error = None;
                 *current = next;
             } else {
-                *error =
-                    Some("Invalid color. Use hex, name (red), or ANSI index (0-255).".to_string());
+                *error = Some("Invalid color. Use #RRGGBB, name, or ANSI index.".to_string());
             }
         }
         KeyCode::Char(ch) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
@@ -396,18 +509,44 @@ fn handle_wizard_input_step(
     }
 }
 
+fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
+    if app.mode != AppMode::Library {
+        return Ok(());
+    }
+    if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        return Ok(());
+    }
+
+    let x = mouse.column;
+    let y = mouse.row;
+    let area = app.list_area;
+    if x < area.x || x >= area.x + area.width || y < area.y || y >= area.y + area.height {
+        return Ok(());
+    }
+
+    let idx = y.saturating_sub(area.y + 2) as usize;
+    if idx < app.themes.len() {
+        app.selected = idx;
+        if let Some(theme) = app.themes.get(app.selected) {
+            apply_entry_theme(theme)?;
+            app.status = format!("Previewing {}.", theme.name);
+        }
+    }
+
+    Ok(())
+}
+
 fn build_theme_entries(saved: &config::Config) -> Vec<ThemeEntry> {
-    let mut entries: Vec<ThemeEntry> = theme::themes()
-        .iter()
-        .map(ThemeEntry::from_builtin)
-        .collect();
-    entries.extend(saved.custom_themes.iter().map(ThemeEntry::from_custom));
-    entries
+    saved
+        .resolved_themes()
+        .into_iter()
+        .map(ThemeEntry::from_resolved)
+        .collect()
 }
 
 fn save_selected_entry(theme: &ThemeEntry) -> Result<()> {
     match theme.source {
-        ThemeSource::BuiltIn => {
+        ThemeSource::BuiltIn | ThemeSource::BuiltInOverride => {
             let built_in = theme::find_theme(&theme.slug)
                 .ok_or_else(|| anyhow::anyhow!("missing built-in theme '{}'", theme.slug))?;
             config::save_selected_theme(built_in)
@@ -417,15 +556,7 @@ fn save_selected_entry(theme: &ThemeEntry) -> Result<()> {
 }
 
 fn apply_entry_theme(theme: &ThemeEntry) -> Result<()> {
-    match theme.source {
-        ThemeSource::BuiltIn => {
-            let built_in = theme::find_theme(&theme.slug)
-                .ok_or_else(|| anyhow::anyhow!("missing built-in theme '{}'", theme.slug))?;
-            apply::apply_theme(io::stdout(), built_in)?;
-        }
-        ThemeSource::Custom => apply::apply_custom_theme(io::stdout(), &theme.to_custom_theme())?,
-    }
-
+    apply::apply_custom_theme(io::stdout(), &theme.to_custom_theme())?;
     Ok(())
 }
 
@@ -456,6 +587,24 @@ impl ThemeEntry {
         }
     }
 
+    fn from_resolved(theme: config::ResolvedTheme) -> Self {
+        let source = match theme.source {
+            config::ResolvedThemeSource::BuiltIn => ThemeSource::BuiltIn,
+            config::ResolvedThemeSource::BuiltInOverride => ThemeSource::BuiltInOverride,
+            config::ResolvedThemeSource::Custom => ThemeSource::Custom,
+        };
+        Self {
+            name: theme.name,
+            slug: theme.slug,
+            foreground: theme.foreground,
+            background: theme.background,
+            cursor: theme.cursor,
+            selection: theme.selection,
+            ansi: theme.ansi,
+            source,
+        }
+    }
+
     fn to_custom_theme(&self) -> config::CustomTheme {
         config::CustomTheme {
             name: self.name.clone(),
@@ -470,464 +619,434 @@ impl ThemeEntry {
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
-    frame.render_widget(Clear, area);
+    frame.render_widget(Clear, frame.area());
+    frame.render_widget(
+        Block::default().style(Style::default().bg(BASE_BG).fg(FG)),
+        frame.area(),
+    );
 
-    let outer = Layout::default()
+    match app.mode {
+        AppMode::Home => draw_home(frame, app),
+        AppMode::Library => draw_library(frame, app),
+        AppMode::Creator => draw_creator(frame, app),
+    }
+}
+
+fn draw_home(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER))
+        .title(Line::from(vec![
+            Span::raw(" [ "),
+            Span::styled(
+                "TERM_SCHEMER_V1",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ] "),
+        ]))
+        .style(Style::default().bg(BASE_BG));
+    frame.render_widget(outer, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(10), Constraint::Length(4)])
+        .margin(2)
+        .split(area);
+
+    let choices = [
+        (
+            "1. [ INITIALIZE_NEW_THEME ]",
+            "Launch synthesis wizard",
+            app.home_selected == 0,
+        ),
+        (
+            "2. [ BROWSE_LIBRARY ]",
+            "Access local repository",
+            app.home_selected == 1,
+        ),
+    ];
+
+    let menu_lines: Vec<Line> = choices
+        .iter()
+        .flat_map(|(left, right, selected)| {
+            let style = if *selected {
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(FG)
+            };
+            vec![
+                Line::from(vec![
+                    Span::styled(*left, style),
+                    Span::styled("   -> ", Style::default().fg(MUTED)),
+                    Span::styled(*right, Style::default().fg(MUTED)),
+                ]),
+                Line::from(""),
+            ]
+        })
+        .collect();
+
+    let menu = Paragraph::new(menu_lines)
+        .alignment(Alignment::Left)
+        .style(Style::default().bg(BASE_BG))
+        .block(Block::default().padding(ratatui::widgets::Padding::new(12, 2, 8, 1)));
+    frame.render_widget(menu, chunks[0]);
+
+    let status = Paragraph::new(app.status.to_string())
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(MUTED))
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(BORDER)),
+        );
+    frame.render_widget(status, chunks[1]);
+}
+
+fn draw_library(frame: &mut Frame, app: &mut App) {
+    let (dynamic_bg, dynamic_panel_bg) = app
+        .themes
+        .get(app.selected)
+        .map(|theme| library_background_colors(theme))
+        .unwrap_or((BASE_BG, PANEL_BG));
+
+    frame.render_widget(
+        Block::default().style(Style::default().bg(dynamic_bg)),
+        frame.area(),
+    );
+
+    let area = frame.area();
+    let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(10),
-            Constraint::Length(3),
+            Constraint::Length(2),
         ])
         .split(area);
 
-    let mode_label = match app.mode {
-        Mode::Picker => "Mode: Picker",
-        Mode::Wizard => "Mode: Create Theme",
-    };
-
-    let title = Paragraph::new(Line::from(vec![
+    let header = Paragraph::new(Line::from(vec![
         Span::styled(
-            "switch-theme",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            "terminal palette picker",
+            Style::default().fg(FG).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  terminal palette picker  "),
-        Span::styled(mode_label, Style::default().fg(Color::Yellow)),
+        Span::raw("                                              "),
+        Span::styled(
+            "Mode: Library",
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        ),
     ]))
-    .alignment(Alignment::Center)
-    .block(Block::default().borders(Borders::BOTTOM));
-    frame.render_widget(title, outer[0]);
+    .block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(BORDER)),
+    );
+    frame.render_widget(header, root[0]);
 
-    let columns = Layout::default()
+    let content = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(32), Constraint::Min(40)])
-        .split(outer[1]);
+        .constraints([Constraint::Length(38), Constraint::Min(40)])
+        .split(root[1]);
 
-    app.list_area = columns[0];
-    draw_theme_list(frame, columns[0], &app.themes, &mut app.state);
-
+    app.list_area = content[0];
+    draw_theme_list(
+        frame,
+        content[0],
+        &app.themes,
+        &mut app.list_state,
+        dynamic_panel_bg,
+    );
     if let Some(theme) = app.themes.get(app.selected) {
-        draw_preview(frame, columns[1], theme, &app.branch);
+        draw_preview(frame, content[1], theme, &app.branch, dynamic_panel_bg);
     }
 
-    if app.mode == Mode::Wizard {
-        draw_wizard_overlay(frame, area, &app.wizard);
-    }
-
-    let footer = Paragraph::new(app.status.to_string())
-        .style(Style::default().fg(Color::Gray))
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::TOP));
-    frame.render_widget(footer, outer[2]);
+    let footer = Paragraph::new(format!(
+        "{}    v1.0.4  [h:home n:new e:edit d:delete a/apply enter:save q:quit]",
+        app.status
+    ))
+    .style(Style::default().fg(MUTED))
+    .block(
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(BORDER)),
+    );
+    frame.render_widget(footer, root[2]);
 }
 
-fn draw_theme_list(frame: &mut Frame, area: Rect, themes: &[ThemeEntry], state: &mut ListState) {
+fn draw_creator(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let root = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(2),
+        ])
+        .split(area);
+
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "switch-theme",
+            Style::default().fg(FG).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("    Theme Creator    ", Style::default().fg(MUTED)),
+        Span::styled(
+            "Mode: Picker",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(BORDER)),
+    );
+    frame.render_widget(header, root[0]);
+
+    let body = Block::default().style(Style::default().bg(BASE_BG));
+    frame.render_widget(body, root[1]);
+
+    let inner = root[1].inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
+    let mut lines: Vec<Line> = vec![];
+    lines.push(Line::from(Span::styled(
+        "Step 1 of 3: Technical Manual",
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        "theme_init(1)",
+        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        "General Commands Manual",
+        Style::default().fg(MUTED),
+    )));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled(
+        "REQUIRED PARAMETERS",
+        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(format!(
+        "1. BACKGROUND  # {}",
+        app.creator.background
+    )));
+    lines.push(Line::from(format!(
+        "2. FOREGROUND  # {}",
+        app.creator.foreground
+    )));
+    lines.push(Line::from(format!(
+        "3. CURSOR      # {}",
+        app.creator.cursor
+    )));
+    lines.push(Line::from(format!(
+        "4. SELECTION   # {}",
+        app.creator.selection
+    )));
+    lines.push(Line::from(format!("5. NAME        {}", app.creator.name)));
+    lines.push(Line::from(""));
+
+    let step_text = match app.creator.step {
+        CreatorStep::Guide => "Guide: Press Enter to begin. q/Esc abort.",
+        CreatorStep::Background => "Input BACKGROUND (#RRGGBB / name / 0-255) then Enter.",
+        CreatorStep::Foreground => "Input FOREGROUND (#RRGGBB / name / 0-255) then Enter.",
+        CreatorStep::Cursor => "Input CURSOR (#RRGGBB / name / 0-255) then Enter.",
+        CreatorStep::Selection => "Input SELECTION (#RRGGBB / name / 0-255) then Enter.",
+        CreatorStep::Name => "Input theme NAME then Enter.",
+        CreatorStep::Review => "Review: Enter/Y to save, N to cancel.",
+    };
+    lines.push(Line::from(Span::styled(
+        step_text,
+        Style::default().fg(ACCENT),
+    )));
+
+    if let Some(err) = &app.creator.error {
+        lines.push(Line::from(Span::styled(
+            err,
+            Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    let current_input = match app.creator.step {
+        CreatorStep::Background => app.creator.background.clone(),
+        CreatorStep::Foreground => app.creator.foreground.clone(),
+        CreatorStep::Cursor => app.creator.cursor.clone(),
+        CreatorStep::Selection => app.creator.selection.clone(),
+        CreatorStep::Name => app.creator.name.clone(),
+        _ => String::new(),
+    };
+    lines.push(Line::from(""));
+    lines.push(Line::from(format!("Awaiting input... {}", current_input)));
+
+    let panel = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(FG))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(BORDER))
+                .style(Style::default().bg(PANEL_BG)),
+        );
+    frame.render_widget(panel, inner);
+
+    let footer = Paragraph::new(format!("{}    [q abort] [enter proceed]", app.status))
+        .style(Style::default().fg(MUTED))
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(BORDER)),
+        );
+    frame.render_widget(footer, root[2]);
+}
+
+fn draw_theme_list(
+    frame: &mut Frame,
+    area: Rect,
+    themes: &[ThemeEntry],
+    state: &mut ListState,
+    panel_bg: Color,
+) {
     let items = themes.iter().map(|theme| {
-        let marker = match theme.source {
+        let source_mark = match theme.source {
             ThemeSource::BuiltIn => "B",
+            ThemeSource::BuiltInOverride => "O",
             ThemeSource::Custom => "C",
         };
 
         ListItem::new(Line::from(vec![
-            Span::styled("  ", Style::default().bg(parse_color(&theme.ansi[4]))),
+            Span::styled("[P] ", Style::default().fg(FG)),
+            Span::styled(theme.name.clone(), Style::default().fg(FG)),
             Span::raw(" "),
-            Span::styled(format!("[{marker}] "), Style::default().fg(Color::DarkGray)),
-            Span::raw(theme.name.clone()),
+            Span::styled(source_mark, Style::default().fg(MUTED)),
         ]))
     });
 
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" Themes (B=Built-in, C=Custom) ")
-                .borders(Borders::ALL),
+                .title(Line::from(vec![
+                    Span::styled(
+                        "Theme Library",
+                        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "\n(B=Built-in, O=Built-in Override, C=Custom)",
+                        Style::default().fg(MUTED),
+                    ),
+                ]))
+                .borders(Borders::RIGHT)
+                .border_style(Style::default().fg(BORDER))
+                .style(Style::default().bg(panel_bg)),
         )
         .highlight_style(
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::White)
+                .bg(ACCENT)
                 .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">")
-        .repeat_highlight_symbol(true);
+        );
 
     frame.render_stateful_widget(list, area, state);
 }
 
-fn draw_preview(frame: &mut Frame, area: Rect, theme: &ThemeEntry, branch: &str) {
-    let demo_height = if area.height >= 30 {
-        15
-    } else if area.height >= 24 {
-        11
-    } else {
-        7
-    };
-
-    let vertical = Layout::default()
+fn draw_preview(frame: &mut Frame, area: Rect, theme: &ThemeEntry, branch: &str, panel_bg: Color) {
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(6),
-            Constraint::Length(demo_height),
-            Constraint::Min(7),
+            Constraint::Length(12),
+            Constraint::Min(8),
         ])
         .split(area);
 
     let header = Paragraph::new(vec![
         Line::from(Span::styled(
-            theme.name.clone(),
-            Style::default()
-                .fg(parse_color(&theme.ansi[12]))
-                .add_modifier(Modifier::BOLD),
+            format!("Preview: {}", theme.name),
+            Style::default().fg(FG).add_modifier(Modifier::BOLD),
         )),
-        Line::from(format!(
-            "fg {}  bg {}  cursor {}",
-            theme.foreground, theme.background, theme.cursor
+        Line::from(Span::styled(
+            "Retro groove color scheme for terminal workflows.",
+            Style::default().fg(MUTED),
         )),
-        Line::from(format!("selection {}", theme.selection)),
+        Line::from(Span::styled(
+            format!(
+                "fg {}  bg {}  cursor {}",
+                theme.foreground, theme.background, theme.cursor
+            ),
+            Style::default().fg(MUTED),
+        )),
     ])
-    .block(Block::default().title(" Preview ").borders(Borders::ALL))
-    .wrap(Wrap { trim: true });
-    frame.render_widget(header, vertical[0]);
+    .block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(BORDER)),
+    );
+    frame.render_widget(header, chunks[0]);
 
-    let sample = Paragraph::new(demo_lines(theme, vertical[1], branch))
-        .block(Block::default().title(" Demo ").borders(Borders::ALL))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(sample, vertical[1]);
-
-    draw_swatches(frame, vertical[2], theme);
-}
-
-fn draw_wizard_overlay(frame: &mut Frame, area: Rect, wizard: &WizardState) {
-    let popup = centered_rect(78, 78, area);
-    frame.render_widget(Clear, popup);
-
-    let title = match wizard.step {
-        WizardStep::Guide => "Create Theme • Guide",
-        WizardStep::Background => "Create Theme • Step 1/5 Background",
-        WizardStep::Text => "Create Theme • Step 2/5 Text",
-        WizardStep::Accent1 => "Create Theme • Step 3/5 Accent 1",
-        WizardStep::Accent2 => "Create Theme • Step 4/5 Accent 2",
-        WizardStep::Name => "Create Theme • Step 5/5 Name",
-        WizardStep::Review => "Create Theme • Review",
-    };
-
-    let mut lines: Vec<Line> = Vec::new();
-    match wizard.step {
-        WizardStep::Guide => {
-            lines.push(Line::from("Need 4 colors:"));
-            lines.push(Line::from("- Background: base terminal background"));
-            lines.push(Line::from("- Text: main readable text"));
-            lines.push(Line::from("- Accent 1: primary highlight"));
-            lines.push(Line::from("- Accent 2: secondary highlight"));
-            lines.push(Line::from(
-                "Accepted: #RRGGBB, RRGGBB, color name (red), or ANSI index (0-255)",
-            ));
-            lines.push(Line::from(""));
-            lines.push(Line::from("Press Enter to start. q/Esc/Ctrl+C to cancel."));
-        }
-        WizardStep::Background => wizard_input_lines(&mut lines, "Background", &wizard.background),
-        WizardStep::Text => wizard_input_lines(&mut lines, "Text", &wizard.text),
-        WizardStep::Accent1 => wizard_input_lines(&mut lines, "Accent 1", &wizard.accent1),
-        WizardStep::Accent2 => wizard_input_lines(&mut lines, "Accent 2", &wizard.accent2),
-        WizardStep::Name => {
-            lines.push(Line::from("Type theme name and press Enter:"));
-            lines.push(Line::from(format!("> {}", wizard.name)));
-            lines.push(Line::from("q/Esc/Ctrl+C: cancel"));
-        }
-        WizardStep::Review => {
-            lines.push(Line::from(format!("Name      : {}", wizard.name.trim())));
-            lines.push(Line::from(format!("Background: {}", wizard.background)));
-            lines.push(Line::from(format!("Text      : {}", wizard.text)));
-            lines.push(Line::from(format!("Accent 1  : {}", wizard.accent1)));
-            lines.push(Line::from(format!("Accent 2  : {}", wizard.accent2)));
-            lines.push(Line::from(""));
-            lines.push(Line::from("Enter/Y: create and apply"));
-            lines.push(Line::from("N: cancel"));
-            lines.push(Line::from("q/Esc/Ctrl+C: cancel"));
-        }
-    }
-
-    if let Some(error) = &wizard.error {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            error.clone(),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )));
-    }
-
-    let body = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(format!(" {title} "))
-                .borders(Borders::ALL),
-        )
-        .wrap(Wrap { trim: false });
-
-    frame.render_widget(body, popup);
-}
-
-fn wizard_input_lines(lines: &mut Vec<Line>, label: &str, value: &str) {
-    lines.push(Line::from(format!("Enter {label} color (#RRGGBB):")));
-    lines.push(Line::from(format!("> {value}")));
-    lines.push(Line::from(
-        "Enter/Tab: continue  |  Backspace: edit  |  q/Esc/Ctrl+C: cancel",
-    ));
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-
-    Layout::default()
+    let demo_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
-}
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[1]);
 
-fn demo_lines(theme: &ThemeEntry, area: Rect, branch: &str) -> Vec<Line<'static>> {
-    let inner_height = area.height.saturating_sub(2) as usize;
-    let wide = area.width >= 76;
-    let mut lines = compact_demo_lines(theme, branch);
-
-    if inner_height >= 7 {
-        lines.extend(status_demo_lines(theme, wide));
-    }
-
-    if inner_height >= 10 {
-        lines.extend(code_demo_lines(theme));
-    }
-
-    if inner_height >= 13 {
-        lines.extend(log_demo_lines(theme, wide));
-    }
-
-    lines.truncate(inner_height.max(1));
-    lines
-}
-
-fn compact_demo_lines(theme: &ThemeEntry, branch: &str) -> Vec<Line<'static>> {
-    vec![
-        Line::from(vec![
-            Span::styled("$ ", Style::default().fg(parse_color(&theme.ansi[10]))),
-            Span::styled(
-                "git status --short",
-                Style::default().fg(parse_color(&theme.foreground)),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                branch.to_string(),
-                Style::default().fg(parse_color(&theme.ansi[12])),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                "+ src/theme.rs",
-                Style::default().fg(parse_color(&theme.ansi[10])),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                "~ src/tui.rs",
-                Style::default().fg(parse_color(&theme.ansi[11])),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                "- old-preview.rs",
-                Style::default().fg(parse_color(&theme.ansi[9])),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "ok",
-                Style::default()
-                    .fg(parse_color(&theme.ansi[10]))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" tests passed  "),
-            Span::styled(
-                "warn",
-                Style::default()
-                    .fg(parse_color(&theme.ansi[11]))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" restart shell  "),
-            Span::styled(
-                "err",
-                Style::default()
-                    .fg(parse_color(&theme.ansi[9]))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" none"),
-        ]),
-    ]
-}
-
-fn current_git_branch() -> String {
-    git_output(["branch", "--show-current"])
-        .filter(|branch| !branch.is_empty())
-        .or_else(|| {
-            git_output(["rev-parse", "--short", "HEAD"]).map(|sha| format!("detached:{sha}"))
-        })
-        .unwrap_or_else(|| "no-git".to_string())
-}
-
-fn git_output<const N: usize>(args: [&str; N]) -> Option<String> {
-    let output = Command::new("git").args(args).output().ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let value = String::from_utf8(output.stdout).ok()?;
-    let value = value.trim().to_string();
-
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-fn status_demo_lines(theme: &ThemeEntry, wide: bool) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            badge("normal", &theme.ansi[7], &theme.ansi[0]),
-            Span::raw(" "),
-            badge("red", &theme.ansi[1], &theme.ansi[15]),
-            Span::raw(" "),
-            badge("green", &theme.ansi[2], &theme.ansi[0]),
-            Span::raw(" "),
-            badge("yellow", &theme.ansi[3], &theme.ansi[0]),
-        ]),
-        Line::from(vec![
-            badge("blue", &theme.ansi[4], &theme.ansi[15]),
-            Span::raw(" "),
-            badge("magenta", &theme.ansi[5], &theme.ansi[15]),
-            Span::raw(" "),
-            badge("cyan", &theme.ansi[6], &theme.ansi[0]),
-            Span::raw(" "),
-            badge("bright", &theme.ansi[15], &theme.ansi[0]),
-        ]),
-    ];
-
-    if wide {
-        lines.push(Line::from(vec![
-            Span::styled(
-                "selection",
-                Style::default().fg(parse_color(&theme.selection)),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                "cursor",
-                Style::default()
-                    .fg(parse_color(&theme.cursor))
-                    .add_modifier(Modifier::REVERSED),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                "foreground",
-                Style::default().fg(parse_color(&theme.foreground)),
-            ),
-            Span::raw(" on "),
-            Span::styled(
-                "background",
-                Style::default()
-                    .fg(parse_color(&theme.foreground))
-                    .bg(parse_color(&theme.background)),
-            ),
-        ]));
-    }
-
-    lines
-}
-
-fn code_demo_lines(theme: &ThemeEntry) -> Vec<Line<'static>> {
-    vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("fn ", Style::default().fg(parse_color(&theme.ansi[5]))),
-            Span::styled(
-                "apply_theme",
-                Style::default().fg(parse_color(&theme.ansi[12])),
-            ),
-            Span::raw("("),
-            Span::styled("palette", Style::default().fg(parse_color(&theme.ansi[14]))),
-            Span::raw(": "),
-            Span::styled("&Theme", Style::default().fg(parse_color(&theme.ansi[11]))),
-            Span::raw(") -> "),
-            Span::styled(
-                "Result<()>",
-                Style::default().fg(parse_color(&theme.ansi[10])),
-            ),
-            Span::raw(" {"),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("emit", Style::default().fg(parse_color(&theme.ansi[12]))),
-            Span::raw("("),
-            Span::styled(
-                "\"OSC 4;10;#...\"",
-                Style::default().fg(parse_color(&theme.ansi[10])),
-            ),
-            Span::raw(");"),
-            Span::raw(" "),
-            Span::styled(
-                "// preview first",
-                Style::default().fg(parse_color(&theme.ansi[8])),
-            ),
-        ]),
-    ]
-}
-
-fn log_demo_lines(theme: &ThemeEntry, wide: bool) -> Vec<Line<'static>> {
-    let timing = if wide { "  42ms" } else { "" };
-    vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("INFO ", Style::default().fg(parse_color(&theme.ansi[6]))),
-            Span::raw("loaded 8 themes"),
-            Span::styled(timing, Style::default().fg(parse_color(&theme.ansi[8]))),
-        ]),
-        Line::from(vec![
-            Span::styled("PASS ", Style::default().fg(parse_color(&theme.ansi[2]))),
-            Span::raw("palette contrast sample"),
-            Span::styled(timing, Style::default().fg(parse_color(&theme.ansi[8]))),
-        ]),
-        Line::from(vec![
-            Span::styled("NEXT ", Style::default().fg(parse_color(&theme.ansi[4]))),
-            Span::raw("press Enter to persist this theme"),
-        ]),
-    ]
-}
-
-fn badge(label: &'static str, background: &str, foreground: &str) -> Span<'static> {
-    Span::styled(
-        format!(" {label} "),
-        Style::default()
-            .fg(parse_color(foreground))
-            .bg(parse_color(background))
-            .add_modifier(Modifier::BOLD),
+    let left_demo = Paragraph::new(vec![
+        Line::from("1 | function initTerminal() {"),
+        Line::from("2 |   const config = loadConfig();"),
+        Line::from("3 |   if (!config.theme) {"),
+        Line::from(Span::styled(
+            "4 |     throw new Error('No theme found');",
+            Style::default().fg(parse_color(&theme.ansi[1])),
+        )),
+        Line::from("5 |   }"),
+        Line::from("6 |   applyTheme(config.theme);"),
+        Line::from("7 | }"),
+    ])
+    .block(
+        Block::default()
+            .title(" [ DEMO_RENDER.SH ] ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(BORDER))
+            .style(Style::default().bg(panel_bg)),
     )
+    .style(Style::default().fg(FG));
+    frame.render_widget(left_demo, demo_cols[0]);
+
+    let right_demo = Paragraph::new(vec![
+        Line::from(format!("user@host:{}$ ./run_tests.sh", branch)),
+        Line::from("[INFO] Loading configuration... OK"),
+        Line::from("[INFO] Initializing modules... OK"),
+        Line::from(Span::styled(
+            "[WARN] Deprecated flag used: --fast",
+            Style::default().fg(parse_color(&theme.ansi[1])),
+        )),
+        Line::from("[PASS] Test suite 1: UI Components"),
+        Line::from("[PASS] Test suite 2: Data Store"),
+        Line::from("All tests passed. (1.2s)"),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(BORDER))
+            .style(Style::default().bg(panel_bg)),
+    )
+    .style(Style::default().fg(FG));
+    frame.render_widget(right_demo, demo_cols[1]);
+
+    draw_swatches(frame, chunks[2], theme, panel_bg);
 }
 
-fn draw_swatches(frame: &mut Frame, area: Rect, theme: &ThemeEntry) {
+fn draw_swatches(frame: &mut Frame, area: Rect, theme: &ThemeEntry, panel_bg: Color) {
+    let panel = Block::default()
+        .title(" [ ANSI_16_COLORS ] ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER))
+        .style(Style::default().bg(panel_bg));
+    let inner = panel.inner(area);
+    frame.render_widget(panel, area);
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(3)])
-        .split(area);
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
 
     for row in 0..2 {
         let cols = Layout::default()
@@ -938,12 +1057,23 @@ fn draw_swatches(frame: &mut Frame, area: Rect, theme: &ThemeEntry) {
         for col in 0..8 {
             let index = row * 8 + col;
             let block = Block::default()
-                .title(format!(" {index} "))
                 .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Rgb(25, 8, 4)))
                 .style(Style::default().bg(parse_color(&theme.ansi[index])));
             frame.render_widget(block, cols[col]);
         }
     }
+}
+
+fn library_background_colors(theme: &ThemeEntry) -> (Color, Color) {
+    let (r, g, b) = hex_to_rgb(&theme.background);
+    let base = Color::Rgb(r, g, b);
+    let panel = Color::Rgb(
+        ((r as f32) * 0.78).round().clamp(0.0, 255.0) as u8,
+        ((g as f32) * 0.78).round().clamp(0.0, 255.0) as u8,
+        ((b as f32) * 0.78).round().clamp(0.0, 255.0) as u8,
+    );
+    (base, panel)
 }
 
 fn normalize_hex(value: &str) -> String {
@@ -1036,30 +1166,30 @@ fn generate_custom_theme(
     name: &str,
     background: &str,
     foreground: &str,
-    accent1: &str,
-    accent2: &str,
+    cursor: &str,
+    selection: &str,
 ) -> config::CustomTheme {
     let bg = hex_to_rgb(background);
     let fg = hex_to_rgb(foreground);
-    let a1 = hex_to_rgb(accent1);
-    let a2 = hex_to_rgb(accent2);
+    let cs = hex_to_rgb(cursor);
+    let sel = hex_to_rgb(selection);
 
     let ansi = [
         rgb_to_hex(scale(bg, 0.55)),
-        rgb_to_hex(a1),
-        rgb_to_hex(mix(a1, a2, 0.45)),
-        rgb_to_hex(mix(a1, fg, 0.45)),
-        rgb_to_hex(a2),
-        rgb_to_hex(mix(a1, a2, 0.7)),
-        rgb_to_hex(mix(a2, fg, 0.4)),
+        rgb_to_hex(mix(cs, fg, 0.4)),
+        rgb_to_hex(mix(sel, fg, 0.35)),
+        rgb_to_hex(mix(fg, cs, 0.15)),
+        rgb_to_hex(cs),
+        rgb_to_hex(mix(cs, sel, 0.6)),
+        rgb_to_hex(sel),
         rgb_to_hex(scale(fg, 0.8)),
         rgb_to_hex(scale(bg, 0.8)),
-        rgb_to_hex(lighten(a1, 0.18)),
-        rgb_to_hex(lighten(mix(a1, a2, 0.45), 0.18)),
-        rgb_to_hex(lighten(mix(a1, fg, 0.45), 0.15)),
-        rgb_to_hex(lighten(a2, 0.2)),
-        rgb_to_hex(lighten(mix(a1, a2, 0.7), 0.2)),
-        rgb_to_hex(lighten(mix(a2, fg, 0.4), 0.2)),
+        rgb_to_hex(lighten(mix(cs, fg, 0.4), 0.15)),
+        rgb_to_hex(lighten(mix(sel, fg, 0.35), 0.15)),
+        rgb_to_hex(lighten(mix(fg, cs, 0.15), 0.15)),
+        rgb_to_hex(lighten(cs, 0.2)),
+        rgb_to_hex(lighten(mix(cs, sel, 0.6), 0.2)),
+        rgb_to_hex(lighten(sel, 0.2)),
         rgb_to_hex(lighten(fg, 0.14)),
     ];
 
@@ -1068,8 +1198,8 @@ fn generate_custom_theme(
         slug: slugify(name),
         foreground: normalize_hex(foreground),
         background: normalize_hex(background),
-        cursor: rgb_to_hex(lighten(fg, 0.2)),
-        selection: rgb_to_hex(lighten(bg, 0.18)),
+        cursor: normalize_hex(cursor),
+        selection: normalize_hex(selection),
         ansi,
     }
 }
@@ -1085,6 +1215,32 @@ fn slugify(value: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+fn current_git_branch() -> String {
+    git_output(["branch", "--show-current"])
+        .filter(|branch| !branch.is_empty())
+        .or_else(|| {
+            git_output(["rev-parse", "--short", "HEAD"]).map(|sha| format!("detached:{sha}"))
+        })
+        .unwrap_or_else(|| "no-git".to_string())
+}
+
+fn git_output<const N: usize>(args: [&str; N]) -> Option<String> {
+    let output = Command::new("git").args(args).output().ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim().to_string();
+
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
@@ -1140,8 +1296,8 @@ mod tests {
 
     #[test]
     fn generated_theme_is_deterministic_for_same_input() {
-        let a = generate_custom_theme("Forest Rose", "#237227", "#FFD786", "#F26076", "#77AADD");
-        let b = generate_custom_theme("Forest Rose", "#237227", "#FFD786", "#F26076", "#77AADD");
+        let a = generate_custom_theme("Forest Rose", "#237227", "#FFD786", "#FFF2CD", "#502B1A");
+        let b = generate_custom_theme("Forest Rose", "#237227", "#FFD786", "#FFF2CD", "#502B1A");
 
         assert_eq!(a, b);
     }

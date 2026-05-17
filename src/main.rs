@@ -15,35 +15,35 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Command::Apply) => {
             let config = config::Config::load().context("failed to load switch-theme config")?;
-            if let Some(theme) = theme::find_theme(&config.theme) {
-                apply::apply_theme(std::io::stdout(), theme)?;
-            } else if let Some(theme) = config.custom_theme_by_slug(&config.theme) {
-                apply::apply_custom_theme(std::io::stdout(), theme)?;
+            if let Some(theme) = config.resolved_theme_by_query(&config.theme) {
+                apply::apply_custom_theme(
+                    std::io::stdout(),
+                    &config::CustomTheme {
+                        name: theme.name,
+                        slug: theme.slug,
+                        foreground: theme.foreground,
+                        background: theme.background,
+                        cursor: theme.cursor,
+                        selection: theme.selection,
+                        ansi: theme.ansi,
+                    },
+                )?;
             } else {
                 anyhow::bail!("unknown saved theme '{}'", config.theme);
             }
         }
         Some(Command::Set { theme: query }) => {
-            if let Some(found) = theme::find_theme(&query) {
-                config::save_selected_theme(found)?;
+            let mut cfg = config::Config::load().context("failed to load switch-theme config")?;
+            if let Some(found) = cfg.resolved_theme_by_query(&query) {
+                cfg.theme = found.slug;
+                cfg.save()?;
             } else {
-                let mut cfg =
-                    config::Config::load().context("failed to load switch-theme config")?;
-                let normalized = normalize(&query);
-                if cfg.custom_theme_by_slug(&normalized).is_some() {
-                    cfg.theme = normalized;
-                    cfg.save()?;
-                } else {
-                    anyhow::bail!("unknown theme '{}'", query);
-                }
+                anyhow::bail!("unknown theme '{}'", query);
             }
         }
         Some(Command::List) => {
-            for theme in theme::themes() {
-                println!("{}", theme.name);
-            }
             let config = config::Config::load().context("failed to load switch-theme config")?;
-            for theme in config.custom_themes {
+            for theme in config.resolved_themes() {
                 println!("{}", theme.name);
             }
         }
@@ -63,17 +63,4 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-fn normalize(value: &str) -> String {
-    value
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
 }
