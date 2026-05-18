@@ -1,6 +1,7 @@
 mod apply;
 mod cli;
 mod config;
+mod contrast;
 mod shell;
 mod theme;
 mod tui;
@@ -26,6 +27,14 @@ fn main() -> anyhow::Result<()> {
                         cursor: theme.cursor,
                         selection: theme.selection,
                         ansi: theme.ansi,
+                        description: theme.description,
+                        author: theme.author,
+                        kind: theme.kind,
+                        mood: theme.mood,
+                        accent: theme.accent,
+                        success: theme.success,
+                        warning: theme.warning,
+                        error: theme.error,
                     },
                 )?;
             } else {

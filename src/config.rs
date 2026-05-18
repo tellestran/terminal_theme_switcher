@@ -23,6 +23,22 @@ pub struct CustomTheme {
     pub cursor: String,
     pub selection: String,
     pub ansi: [String; 16],
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub mood: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +50,22 @@ pub struct BuiltinOverride {
     pub cursor: String,
     pub selection: String,
     pub ansi: [String; 16],
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub mood: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +78,14 @@ pub struct ResolvedTheme {
     pub selection: String,
     pub ansi: [String; 16],
     pub source: ResolvedThemeSource,
+    pub description: String,
+    pub author: String,
+    pub kind: String,
+    pub mood: Vec<String>,
+    pub accent: Option<String>,
+    pub success: Option<String>,
+    pub warning: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,6 +218,14 @@ impl Config {
                     selection: override_theme.selection.clone(),
                     ansi: override_theme.ansi.clone(),
                     source: ResolvedThemeSource::BuiltInOverride,
+                    description: override_theme.description.clone(),
+                    author: override_theme.author.clone(),
+                    kind: override_theme.kind.clone(),
+                    mood: override_theme.mood.clone(),
+                    accent: override_theme.accent.clone(),
+                    success: override_theme.success.clone(),
+                    warning: override_theme.warning.clone(),
+                    error: override_theme.error.clone(),
                 });
             } else {
                 themes.push(ResolvedTheme {
@@ -189,6 +237,14 @@ impl Config {
                     selection: built_in.selection.to_string(),
                     ansi: built_in.ansi.map(str::to_string),
                     source: ResolvedThemeSource::BuiltIn,
+                    description: built_in.description.to_string(),
+                    author: built_in.author.to_string(),
+                    kind: built_in.kind.to_string(),
+                    mood: built_in.mood.iter().map(|s| s.to_string()).collect(),
+                    accent: None,
+                    success: None,
+                    warning: None,
+                    error: None,
                 });
             }
         }
@@ -202,6 +258,14 @@ impl Config {
             selection: custom.selection.clone(),
             ansi: custom.ansi.clone(),
             source: ResolvedThemeSource::Custom,
+            description: custom.description.clone(),
+            author: custom.author.clone(),
+            kind: custom.kind.clone(),
+            mood: custom.mood.clone(),
+            accent: custom.accent.clone(),
+            success: custom.success.clone(),
+            warning: custom.warning.clone(),
+            error: custom.error.clone(),
         }));
 
         themes
@@ -257,46 +321,53 @@ mod tests {
         temp
     }
 
+    fn test_custom(name: &str, slug: &str) -> CustomTheme {
+        CustomTheme {
+            name: name.to_string(),
+            slug: slug.to_string(),
+            foreground: "#FFFFFF".to_string(),
+            background: "#101010".to_string(),
+            cursor: "#DDDDDD".to_string(),
+            selection: "#333333".to_string(),
+            ansi: std::array::from_fn(|i| format!("#{:02X}{:02X}{:02X}", i * 17, i * 17, i * 17)),
+            description: String::new(),
+            author: "test".to_string(),
+            kind: "custom".to_string(),
+            mood: Vec::new(),
+            accent: None,
+            success: None,
+            warning: None,
+            error: None,
+        }
+    }
+
+    fn test_override(name: &str, slug: &str) -> BuiltinOverride {
+        BuiltinOverride {
+            name: name.to_string(),
+            slug: slug.to_string(),
+            foreground: "#FFFFFF".to_string(),
+            background: "#111111".to_string(),
+            cursor: "#EEEEEE".to_string(),
+            selection: "#333333".to_string(),
+            ansi: std::array::from_fn(|_| "#444444".to_string()),
+            description: String::new(),
+            author: String::new(),
+            kind: String::new(),
+            mood: Vec::new(),
+            accent: None,
+            success: None,
+            warning: None,
+            error: None,
+        }
+    }
+
     #[test]
     fn config_round_trips_as_toml() {
         let _guard = env_lock().lock().unwrap();
         let config = Config {
             theme: "dracula".to_string(),
-            custom_themes: vec![CustomTheme {
-                name: "My Theme".to_string(),
-                slug: "my-theme".to_string(),
-                foreground: "#FFFFFF".to_string(),
-                background: "#101010".to_string(),
-                cursor: "#DDDDDD".to_string(),
-                selection: "#333333".to_string(),
-                ansi: [
-                    "#000000".to_string(),
-                    "#111111".to_string(),
-                    "#222222".to_string(),
-                    "#333333".to_string(),
-                    "#444444".to_string(),
-                    "#555555".to_string(),
-                    "#666666".to_string(),
-                    "#777777".to_string(),
-                    "#888888".to_string(),
-                    "#999999".to_string(),
-                    "#AAAAAA".to_string(),
-                    "#BBBBBB".to_string(),
-                    "#CCCCCC".to_string(),
-                    "#DDDDDD".to_string(),
-                    "#EEEEEE".to_string(),
-                    "#FFFFFF".to_string(),
-                ],
-            }],
-            builtin_overrides: vec![BuiltinOverride {
-                name: "Tokyo Night Custom".to_string(),
-                slug: "tokyo-night".to_string(),
-                foreground: "#FFFFFF".to_string(),
-                background: "#101010".to_string(),
-                cursor: "#DDDDDD".to_string(),
-                selection: "#333333".to_string(),
-                ansi: std::array::from_fn(|_| "#999999".to_string()),
-            }],
+            custom_themes: vec![test_custom("My Theme", "my-theme")],
+            builtin_overrides: vec![test_override("Tokyo Night Custom", "tokyo-night")],
         };
 
         let encoded = toml::to_string(&config).unwrap();
@@ -310,27 +381,12 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         let _temp = setup_temp_config_home();
 
-        save_custom_theme(CustomTheme {
-            name: "Ocean".to_string(),
-            slug: "ocean".to_string(),
-            foreground: "#FFFFFF".to_string(),
-            background: "#001122".to_string(),
-            cursor: "#EEEEEE".to_string(),
-            selection: "#223344".to_string(),
-            ansi: std::array::from_fn(|_| "#111111".to_string()),
-        })
-        .unwrap();
+        save_custom_theme(test_custom("Ocean", "ocean")).unwrap();
 
-        save_custom_theme(CustomTheme {
-            name: "Ocean v2".to_string(),
-            slug: "ocean".to_string(),
-            foreground: "#FFD786".to_string(),
-            background: "#237227".to_string(),
-            cursor: "#FFF0C2".to_string(),
-            selection: "#2F6E5A".to_string(),
-            ansi: std::array::from_fn(|_| "#222222".to_string()),
-        })
-        .unwrap();
+        let mut v2 = test_custom("Ocean v2", "ocean");
+        v2.foreground = "#FFD786".to_string();
+        v2.background = "#237227".to_string();
+        save_custom_theme(v2).unwrap();
 
         let config = Config::load().unwrap();
         assert_eq!(config.custom_themes.len(), 1);
@@ -342,16 +398,7 @@ mod tests {
     fn delete_custom_theme_removes_and_resets_active_if_needed() {
         let _guard = env_lock().lock().unwrap();
         let _temp = setup_temp_config_home();
-        save_custom_theme(CustomTheme {
-            name: "Ocean".to_string(),
-            slug: "ocean".to_string(),
-            foreground: "#FFFFFF".to_string(),
-            background: "#001122".to_string(),
-            cursor: "#EEEEEE".to_string(),
-            selection: "#223344".to_string(),
-            ansi: std::array::from_fn(|_| "#111111".to_string()),
-        })
-        .unwrap();
+        save_custom_theme(test_custom("Ocean", "ocean")).unwrap();
 
         let deleted = delete_custom_theme("ocean").unwrap();
         assert!(deleted);
@@ -369,16 +416,7 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         let _temp = setup_temp_config_home();
 
-        save_builtin_override(BuiltinOverride {
-            name: "Tokyo Night Reworked".to_string(),
-            slug: "tokyo-night".to_string(),
-            foreground: "#FFFFFF".to_string(),
-            background: "#111111".to_string(),
-            cursor: "#EEEEEE".to_string(),
-            selection: "#333333".to_string(),
-            ansi: std::array::from_fn(|_| "#444444".to_string()),
-        })
-        .unwrap();
+        save_builtin_override(test_override("Tokyo Night Reworked", "tokyo-night")).unwrap();
 
         let config = Config::load().unwrap();
         let resolved = config
